@@ -1974,6 +1974,8 @@ static void write_object_file_prepare_literally(const struct git_hash_algo *algo
 	hash_object_body(algo, &c, buf, len, oid, hdr, hdrlen);
 }
 
+#define CHECK_COLLISION_DEST_VANISHED -2
+
 static int check_collision(const char *source, const char *dest)
 {
 	char buf_source[4096], buf_dest[4096];
@@ -1982,8 +1984,7 @@ static int check_collision(const char *source, const char *dest)
 
 	fd_source = open(source, O_RDONLY);
 	if (fd_source < 0) {
-		if (errno != ENOENT)
-			ret = error_errno(_("unable to open %s"), source);
+		ret = error_errno(_("unable to open %s"), source);
 		goto out;
 	}
 
@@ -1991,6 +1992,8 @@ static int check_collision(const char *source, const char *dest)
 	if (fd_dest < 0) {
 		if (errno != ENOENT)
 			ret = error_errno(_("unable to open %s"), dest);
+		else
+			ret = CHECK_COLLISION_DEST_VANISHED;
 		goto out;
 	}
 
@@ -2038,8 +2041,10 @@ int finalize_object_file(const char *tmpfile, const char *filename)
 int finalize_object_file_flags(const char *tmpfile, const char *filename,
 			       enum finalize_object_file_flags flags)
 {
-	struct stat st;
-	int ret = 0;
+	int ret;
+
+retry:
+	ret = 0;
 
 	if (object_creation_mode == OBJECT_CREATION_USES_RENAMES)
 		goto try_rename;
@@ -2060,6 +2065,8 @@ int finalize_object_file_flags(const char *tmpfile, const char *filename,
 	 * left to unlink.
 	 */
 	if (ret && ret != EEXIST) {
+		struct stat st;
+
 	try_rename:
 		if (!stat(filename, &st))
 			ret = EEXIST;
@@ -2075,9 +2082,13 @@ int finalize_object_file_flags(const char *tmpfile, const char *filename,
 			errno = saved_errno;
 			return error_errno(_("unable to write file %s"), filename);
 		}
-		if (!(flags & FOF_SKIP_COLLISION_CHECK) &&
-		    check_collision(tmpfile, filename))
+		if (!(flags & FOF_SKIP_COLLISION_CHECK)) {
+			ret = check_collision(tmpfile, filename);
+			if (ret == CHECK_COLLISION_DEST_VANISHED)
+				goto retry;
+			else if (ret)
 				return -1;
+		}
 		unlink_or_warn(tmpfile);
 	}
 
